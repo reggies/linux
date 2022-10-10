@@ -91,7 +91,7 @@ static void rndis_msg_indicate(struct usbnet *dev, struct rndis_indicate *msg,
 int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 {
 	struct cdc_state	*info = (void *) &dev->data;
-	struct usb_cdc_notification notification;
+	struct usb_cdc_notification *notification;
 	int			master_ifnum;
 	int			retval;
 	int			partial;
@@ -102,6 +102,10 @@ int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 	/* REVISIT when this gets called from contexts other than probe() or
 	 * disconnect(): either serialize, or dispatch responses on xid
 	 */
+
+	notification = kmalloc (sizeof *notification, GFP_KERNEL);
+	if (!notification)
+		return -ENOMEM;
 
 	msg_type = le32_to_cpu(buf->msg_type);
 
@@ -121,7 +125,7 @@ int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 		buf, le32_to_cpu(buf->msg_len),
 		RNDIS_CONTROL_TIMEOUT_MS);
 	if (unlikely(retval < 0 || xid == 0))
-		return retval;
+		goto fail;
 
 	/* Some devices don't respond on the control channel until
 	 * polled on the status channel, so do that first. */
@@ -130,10 +134,10 @@ int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 			dev->udev,
 			usb_rcvintpipe(dev->udev,
 				       dev->status->desc.bEndpointAddress),
-			&notification, sizeof(notification), &partial,
+			notification, sizeof *notification, &partial,
 			RNDIS_CONTROL_TIMEOUT_MS);
 		if (unlikely(retval < 0))
-			return retval;
+			goto fail;
 	}
 
 	/* Poll the control channel; the request probably completed immediately */
@@ -155,14 +159,15 @@ int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 			if (likely(msg_type == rsp)) {
 				if (likely(request_id == xid)) {
 					if (unlikely(rsp == RNDIS_MSG_RESET_C))
-						return 0;
+						goto success;
 					if (likely(RNDIS_STATUS_SUCCESS ==
 							status))
-						return 0;
+						goto success;
 					dev_dbg(&info->control->dev,
 						"rndis reply status %08x\n",
 						status);
-					return -EL3RST;
+					retval = -EL3RST;
+					goto fail;
 				}
 				dev_dbg(&info->control->dev,
 					"rndis reply id %d expected %d\n",
@@ -204,7 +209,13 @@ int rndis_command(struct usbnet *dev, struct rndis_msg_hdr *buf, int buflen)
 		msleep(40);
 	}
 	dev_dbg(&info->control->dev, "rndis response timeout\n");
-	return -ETIMEDOUT;
+	retval = -ETIMEDOUT;
+fail:
+	kfree(notification);
+	return retval;
+success:
+	kfree(notification);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(rndis_command);
 
