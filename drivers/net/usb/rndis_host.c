@@ -352,8 +352,15 @@ generic_rndis_bind(struct usbnet *dev, struct usb_interface *intf, int flags)
 		goto fail_and_release;
 	}
 
-	dev->rx_urb_size = dev->hard_mtu + (dev->maxpacket + 1);
-	dev->rx_urb_size &= ~(dev->maxpacket - 1);
+	/* Windows RNDIS driver uses a 16K URBs which works
+	 * fine for GT-I9500 [Galaxy S4] / GT-I9250
+	 * [Galaxy Nexus] (04e8:6863). Linux driver however
+	 * only receives 1 byte long URBs on its rx path
+	 * when its rx_urb_size is 2K.
+	 */
+	dev->rx_urb_size = round_up(dev->hard_mtu + dev->maxpacket + 1,
+		dev->maxpacket);
+
 	u.init->max_transfer_size = cpu_to_le32(dev->rx_urb_size);
 
 	net->netdev_ops = &rndis_netdev_ops;
