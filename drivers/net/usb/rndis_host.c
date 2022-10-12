@@ -352,14 +352,24 @@ generic_rndis_bind(struct usbnet *dev, struct usb_interface *intf, int flags)
 		goto fail_and_release;
 	}
 
-	/* Windows RNDIS driver uses a 16K URBs which works
-	 * fine for GT-I9500 [Galaxy S4] / GT-I9250
-	 * [Galaxy Nexus] (04e8:6863). Linux driver however
-	 * only receives 1 byte long URBs on its rx path
-	 * when its rx_urb_size is 2K.
+	/* Some notes on GT-I9070 / GT-I9500 [Galaxy S4] / GT-I9250
+	 * [Galaxy Nexus] :
+	 * - Windows RNDIS driver is happy with 16K URB
+	 * - Linux driver sets rx_urb_size=2K and receives 1 byte long urbs on rx
+	 * - For rx_urb_size<4674 a lot of corrupted msg emerge on rx
+	 * - Occasionally, the client device crashes
+	 * - dmesg reports hard mtu 1558 (4740 from dev), rx buflen 16384, align 1
+	 *
+	 * Follow the RNDIS spec and choose MaxTransferSize
+	 * to 0x4000 as it SHOULD be
 	 */
-	dev->rx_urb_size = round_up(dev->hard_mtu + dev->maxpacket + 1,
-		dev->maxpacket);
+
+	if (dev->driver_info->data & RNDIS_DRIVER_DATA_16K_URB)
+		dev->rx_urb_size = 0x4000;
+	else {
+		dev->rx_urb_size = dev->hard_mtu + (dev->maxpacket + 1);
+		dev->rx_urb_size &= ~(dev->maxpacket - 1);
+	}
 
 	u.init->max_transfer_size = cpu_to_le32(dev->rx_urb_size);
 
@@ -625,6 +635,17 @@ static const struct driver_info	rndis_info = {
 	.tx_fixup =	rndis_tx_fixup,
 };
 
+static const struct driver_info	rndis_samsung_info = {
+	.description =	"RNDIS device (Samung Galaxy S4)",
+	.flags =	FLAG_ETHER | FLAG_POINTTOPOINT | FLAG_FRAMING_RN | FLAG_NO_SETINT,
+	.data =		RNDIS_DRIVER_DATA_16K_URB,
+	.bind =		rndis_bind,
+	.unbind =	rndis_unbind,
+	.status =	rndis_status,
+	.rx_fixup =	rndis_rx_fixup,
+	.tx_fixup =	rndis_tx_fixup,
+};
+
 static const struct driver_info	rndis_poll_status_info = {
 	.description =	"RNDIS device (poll status before control)",
 	.flags =	FLAG_ETHER | FLAG_POINTTOPOINT | FLAG_FRAMING_RN | FLAG_NO_SETINT,
@@ -678,6 +699,16 @@ static const struct usb_device_id	products [] = {
 	/* "ActiveSync" is an undocumented variant of RNDIS, used in WM5 */
 	USB_INTERFACE_INFO(USB_CLASS_MISC, 1, 1),
 	.driver_info = (unsigned long) &rndis_poll_status_info,
+}, {
+	/* GT-I9500 [Galaxy S4] / GT-I9250 [Galaxy Nexus] */
+	USB_DEVICE_AND_INTERFACE_INFO(0x04e8, 0x6863,
+				      USB_CLASS_WIRELESS_CONTROLLER, 1, 3),
+	.driver_info = (unsigned long)&rndis_samsung_info,
+}, {
+	/* GT-I9070 (tethering, usb debug) */
+	USB_DEVICE_AND_INTERFACE_INFO(0x04e8, 0x6864,
+				      USB_CLASS_WIRELESS_CONTROLLER, 1, 3),
+	.driver_info = (unsigned long)&rndis_samsung_info,
 }, {
 	/* RNDIS for tethering */
 	USB_INTERFACE_INFO(USB_CLASS_WIRELESS_CONTROLLER, 1, 3),
